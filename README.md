@@ -1,7 +1,7 @@
 # ai-confluence-search
 AI Enhanced Confluence Search Assistant
 
-Project DescriptionIdea description
+Idea description
 A smarter, faster way to find internal knowledge
 
 Today, finding the right information inside Confluence can be slow, inconsistent, and frustrating — especially when pages are outdated, poorly titled, or scattered across many spaces. This idea proposes building an AI‑powered search assistant that significantly improves discoverability by combining Confluence’s existing search with machine learning and GenAI agents.
