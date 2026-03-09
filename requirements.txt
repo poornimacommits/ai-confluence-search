@@ -1,0 +1,6 @@
+httpx==0.28.1
+python-dotenv==1.0.1
+fastapi~=0.135.1
+weaviate-client==3.26.6
+sentence-transformers==2.7.0
+numpy~=2.4.3
