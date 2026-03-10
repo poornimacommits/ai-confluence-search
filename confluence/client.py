@@ -1,9 +1,15 @@
 import socket
 import httpx
+from datetime import datetime
 from config.settings import settings
 
 
+# ---------------------------------------------------------
+# Proxy & transport helpers
+# ---------------------------------------------------------
+
 def vpn_proxy_active(host="127.0.0.1", port=10003, timeout=0.3):
+    """Returns True if local VPN proxy is active (home), else False (office)."""
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -12,12 +18,17 @@ def vpn_proxy_active(host="127.0.0.1", port=10003, timeout=0.3):
 
 
 def get_transport():
+    """Return proxy transport at home, direct transport in office."""
     if vpn_proxy_active():
         print("Using VPN proxy (127.0.0.1:10003)")
         return httpx.AsyncHTTPTransport(proxy="http://127.0.0.1:10003")
     print("Using direct connection")
     return httpx.AsyncHTTPTransport()
 
+
+# ---------------------------------------------------------
+# Confluence API Client
+# ---------------------------------------------------------
 
 class ConfluenceClient:
     def __init__(self):
@@ -27,12 +38,17 @@ class ConfluenceClient:
             "Accept": "application/json",
         }
 
+    # -----------------------------------------------------
+    # Basic Confluence API calls
+    # -----------------------------------------------------
+
     async def search(self, query: str):
+        """Low-level raw CQL search (useful for debugging)."""
         transport = get_transport()
         params = {
             "cql": f'text ~ "{query}" AND type = page',
             "limit": "5",
-            "expand": "content.body.storage,content.version,content.space"
+            "expand": "content.body.storage,content.version,content.space",
         }
 
         async with httpx.AsyncClient(transport=transport, timeout=30.0) as client:
@@ -42,6 +58,7 @@ class ConfluenceClient:
             return r.json()
 
     async def get_page_id(self, space_key: str, title: str):
+        """Resolve page ID by space + title."""
         transport = get_transport()
         params = {"spaceKey": space_key, "title": title, "expand": "version,space"}
 
@@ -52,27 +69,10 @@ class ConfluenceClient:
             data = r.json()
 
         results = data.get("results", [])
-        if not results:
-            return None
-        return results[0]  # full result block
-
-    async def get_children(self, page_id: str, limit=200, expand="version,space"):
-        transport = get_transport()
-        base_url = f"{self.base}/rest/api/content/{page_id}/child/page"
-        params = {"limit": str(limit), "expand": expand}
-        children = []
-
-        async with httpx.AsyncClient(transport=transport, timeout=30.0) as client:
-            r = await client.get(base_url, headers=self.headers, params=params)
-            r.raise_for_status()
-            data = r.json()
-
-        for it in data.get("results", []):
-            children.append(it)
-
-        return children
+        return results[0] if results else None
 
     async def get_page(self, page_id: str):
+        """Fetch full page JSON including storage, version, space."""
         transport = get_transport()
         params = {"expand": "body.storage,version,space"}
 
@@ -82,23 +82,24 @@ class ConfluenceClient:
             r.raise_for_status()
             return r.json()
 
-    async def get_descendants(self, page_id: str, max_nodes=1000):
+    async def get_descendants(self, page_id: str, max_nodes=5000):
         """
-        BFS traversal of child pages.
+        BFS traversal to fetch ALL child pages recursively (children, grandchildren, ...).
+        Returns a flat list of descendant nodes (NOT full pages).
         """
         queue = [page_id]
         collected = []
 
         async with httpx.AsyncClient(transport=get_transport(), timeout=30.0) as client:
-
             while queue and len(collected) < max_nodes:
                 parent = queue.pop(0)
 
                 r = await client.get(
                     f"{self.base}/rest/api/content/{parent}/child/page",
                     headers=self.headers,
-                    params={"limit": "200", "expand": "version,space"}
+                    params={"limit": "200", "expand": "version,space"},
                 )
+
                 if r.status_code == 404:
                     continue
 
@@ -112,3 +113,123 @@ class ConfluenceClient:
                     queue.append(it.get("id"))
 
         return collected
+
+    # -----------------------------------------------------
+    # Metadata extraction (no body_text)
+    # -----------------------------------------------------
+
+    def extract_metadata(self, page_json: dict, snippet_len: int = 240) -> dict:
+        """
+        Extract metadata fields for metadata-only DB.
+        snippet is taken from the cleaned HTML body for real context.
+        """
+
+        content = page_json or {}
+
+        # Basic
+        page_id = content.get("id")
+        title = content.get("title", "")
+
+        # Space
+        space = content.get("space") or {}
+        space_key = space.get("key", "")
+        space_name = space.get("name", "")
+
+        # Version info
+        version = content.get("version") or {}
+        last_modified = version.get("when")
+        version_number = version.get("number", 0)
+        author = (version.get("by") or {}).get("displayName", "")
+
+        # URL (relative)
+        links = content.get("_links", {}) or {}
+        url = links.get("webui", "")
+
+        # ----- NEW: extract a real snippet -----
+        # get HTML body
+        body = (content.get("body") or {}).get("storage") or {}
+        html = body.get("value", "") or ""
+
+        # clean HTML → plain text
+        clean_text = self._clean_html(html)
+
+        # snippet = first N chars of clean text
+        if clean_text.strip():
+            snippet = clean_text[:snippet_len].rstrip() + ("…" if len(clean_text) > snippet_len else "")
+        else:
+            # fallback: title
+            snippet = title
+
+
+        # Epoch timestamp
+        timestamp = None
+        if last_modified:
+            try:
+                dt = datetime.fromisoformat(last_modified.replace("Z", "+00:00"))
+                timestamp = int(dt.timestamp() * 1000)
+            except:
+                timestamp = None
+
+        return {
+            "page_id": page_id,
+            "title": title,
+            "snippet": snippet,
+            "last_modified": last_modified,
+            "version_number": version_number,
+            "author": author,
+            "space_key": space_key,
+            "space_name": space_name,
+            "url": url,
+            "timestamp": timestamp,
+        }
+
+    # -----------------------------------------------------
+    # High-level metadata pipeline
+    # -----------------------------------------------------
+
+    async def fetch_page_with_metadata(self, page_id: str) -> dict:
+        """
+        Fetch one page & return metadata-only dict.
+        """
+        page_json = await self.get_page(page_id)
+        if not page_json:
+            return None
+        return self.extract_metadata(page_json)
+
+    async def fetch_all_pages_with_metadata(self, root_page_id: str) -> list[dict]:
+        """
+        1. Get all descendants
+        2. For each: fetch full page → extract metadata
+        3. Return metadata list ready for indexing
+        """
+        descendants = await self.get_descendants(root_page_id, max_nodes=5000)
+
+        pages = []
+        for node in descendants:
+            pid = node.get("id")
+            try:
+                meta = await self.fetch_page_with_metadata(pid)
+                if meta:
+                    pages.append(meta)
+            except Exception as ex:
+                print(f"[warn] Error processing page {pid}: {ex}")
+                continue
+
+
+        return pages
+
+    def _clean_html(self, html: str) -> str:
+        """Very small HTML → plain text cleaner for snippet extraction."""
+        import re, html as ihtml
+
+        if not html:
+            return ""
+
+        # Remove HTML tags
+        text = re.sub(r"<[^>]+>", " ", html)
+
+        # Collapse whitespace
+        text = re.sub(r"\s+", " ", text).strip()
+
+        # Unescape HTML entities (&amp; → &)
+        return ihtml.unescape(text)
