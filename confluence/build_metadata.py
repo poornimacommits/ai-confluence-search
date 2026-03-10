@@ -1,13 +1,15 @@
 # confluence/build_metadata.py
 
 import asyncio
+import json
+from datetime import datetime
 from confluence.client import ConfluenceClient
 
 
 async def build_metadata(space_key: str, title: str):
     """
     Fetch metadata for all Confluence pages under the given root page.
-    Just prints the resulting list so you can verify the dataset.
+    Returns the resulting metadata list so it can be fed into ETL.
     """
 
     cf = ConfluenceClient()
@@ -44,20 +46,38 @@ async def build_metadata(space_key: str, title: str):
 
     print(f"[done] Total metadata records: {len(metadata_list)}")
 
-    # Print first few entries for inspection
-    print("\n--- SAMPLE OUTPUT (first 5 records) ---")
-    for item in metadata_list[:5]:
-        print(item)
-        print()
-
     return metadata_list
 
 
+def write_json(records: list[dict], path: str):
+    """
+    Writes the metadata list to a JSON file.
+    """
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
+    print(f"[file] Metadata written to {path}")
+
+
+def preview(records: list[dict], n: int = 5):
+    """
+    Prints the first few entries for inspection.
+    """
+    print("\n--- SAMPLE OUTPUT (first {0}) ---".format(min(n, len(records))))
+    for rec in records[:n]:
+        print(rec)
+        print()
+
+
 if __name__ == "__main__":
-    # Your EE Onbox Home Page
-    asyncio.run(
+    # When run directly: build metadata and write to JSON
+    out_file = f"metadata_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+    records = asyncio.run(
         build_metadata(
             space_key="EE",
             title="End-to-End Test Onbox Team Germany"
         )
     )
+
+    preview(records, n=5)          # show some results
+    write_json(records, out_file)  # save entire dataset to JSON

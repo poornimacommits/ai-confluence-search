@@ -1,3 +1,4 @@
+# overwrite .gitignore cleanly
 cat > .gitignore << 'EOF'
 .venv/
 venv/
@@ -6,4 +7,5 @@ __pycache__/
 .idea/
 .env
 *.env*
+*.json
 EOF
