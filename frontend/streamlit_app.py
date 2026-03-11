@@ -1,6 +1,9 @@
 import streamlit as st
 import weaviate
-from sentence_transformers import SentenceTransformer
+import os
+import requests
+from pathlib import Path
+from dotenv import load_dotenv
 
 
 st.set_page_config(
@@ -34,20 +37,62 @@ def set_background(png_file):
         unsafe_allow_html=True
     )
 
+
+def resolve_background_path(file_name):
+    app_dir = Path(__file__).resolve().parent
+    local_path = app_dir / file_name
+    if local_path.exists():
+        return local_path
+    cwd_path = Path.cwd() / file_name
+    if cwd_path.exists():
+        return cwd_path
+    raise FileNotFoundError(f"Background image not found: {local_path} or {cwd_path}")
+
+
 # Set the background
-set_background("C:\\Users\\POMY1994\\VSProjects\\ai-confluence-search\\frontend\\background.png")
+set_background(resolve_background_path("background.png"))
 st.title("🔎 AI-Powered Confluence Search")
 
 st.markdown("Find the **most reliable internal documentation instantly**.")
 
 # Connect to Weaviate
-client = weaviate.connect_to_local()
-
 @st.cache_resource
-def load_model():
-    return SentenceTransformer("BAAI/bge-small-en-v1.5")
+def get_client():
+    return weaviate.connect_to_local()
 
-model = load_model()
+client = get_client()
+
+# Always load the workspace-level .env regardless of launch directory.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
+
+# Core AI step: Get embedding for the search query using Azure OpenAI
+def get_query_embedding(text):
+    api_key = os.getenv("AZURE_OPENAI_KEY")
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT") 
+    deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT")
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION")
+    
+    if not api_key or not endpoint:
+        raise RuntimeError(
+            "Set AZURE_OPENAI_KEY and AZURE_OPENAI_ENDPOINT in your .env file."
+        )
+
+    url = (
+        f"{endpoint.rstrip('/')}"
+        f"/openai/deployments/{deployment}/embeddings?api-version={api_version}"
+    )
+    response = requests.post(
+        url,
+        headers={
+            "api-key": api_key,
+            "Content-Type": "application/json",
+        },
+        json={"input": text},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()["data"][0]["embedding"]
 
 # Text input for the search query
 query = st.text_input("Search internal knowledge")
@@ -55,8 +100,9 @@ query = st.text_input("Search internal knowledge")
 if st.button("Search") and query:
 
     with st.spinner("Searching..."):
-        query_vector = model.encode("Convert this query into an embedding for semantic search of Confluence knowledge:" + query
-        ).tolist()
+        query_vector = get_query_embedding(
+            "Convert this query into an embedding for semantic search of Confluence knowledge:" + query
+        )
 
         # Show the vector
         #st.write("First 10 dimensions of embedding:", query_vector[:10])
@@ -64,11 +110,6 @@ if st.button("Search") and query:
         # Perform semantic search in the 'Metadata' class
         try:
             collection = client.collections.get("Metadata")
-            #response = collection.query.near_text(
-                #query=query,
-                #limit=5,
-                #return_properties=["title", "url", "space", "status", "lastModified"]
-            #)
             response = collection.query.near_vector(
                 near_vector=query_vector,
                 limit=10,
@@ -84,12 +125,10 @@ if st.button("Search") and query:
                 for idx, obj in enumerate(metadata, start=1):
                     props = obj.properties
                     last_modified = props.get("last_modified", "Unknown Date")
-                    space = props.get("space_name", "Unknown Space")
                     title = props.get("title", "No Title")
                     if props.get('url'):
                         base_url = "https://www.stb.bskyb.com/confluence"
-                        url_suffix = props.get('url')
-                        url = f"{base_url}{url_suffix}"
+                        url = base_url + props.get("url", "")
                         st.markdown(f"### {title} 🔗 ({url})")
                     else:
                         st.markdown(f"### {title}")

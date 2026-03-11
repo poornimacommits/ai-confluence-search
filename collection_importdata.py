@@ -1,10 +1,8 @@
 import weaviate
 import json
+import os
 from datetime import datetime, timezone
-from weaviate.classes.config import Configure, DataType, Property
-
-# Connect to Weaviate
-client = weaviate.connect_to_local()
+from dotenv import load_dotenv
 
 def to_rfc3339(ms):
     if ms is None:
@@ -12,61 +10,109 @@ def to_rfc3339(ms):
     # ms → seconds
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat().replace('+00:00', 'Z')
 
-if client.collections.exists("Metadata"):
-    client.collections.delete("Metadata")
 
-# Create a collection
-client.collections.create(
-    name="Metadata",
-    properties=[
-    Property(name="page_id", data_type=DataType.TEXT),
-    Property(name="title", data_type=DataType.TEXT),
-    Property(name="snippet", data_type=DataType.TEXT),
-    Property(name="last_modified", data_type=DataType.DATE),
-    Property(name="version_number", data_type=DataType.NUMBER),
-    Property(name="lastmodified_author", data_type=DataType.TEXT),
-    Property(name="space_key", data_type=DataType.TEXT),
-    Property(name="space_name", data_type=DataType.TEXT),
-    Property(name="url", data_type=DataType.TEXT),
-    Property(name="timestamp", data_type=DataType.DATE)
-    ],
-    vector_config=Configure.Vectors.text2vec_transformers(source_properties=["title", "snippet"])  # Use a vectorizer to generate embeddings during import
-    # vector_config=Configure.Vectors.self_provided()  # If you want to import your own pre-generated embeddings
-)
+def resource_name_from_endpoint(endpoint):
+    # https://<resource>.openai.azure.com -> <resource>
+    if not endpoint:
+        return None
+    host = endpoint.replace("https://", "").replace("http://", "").split("/")[0]
+    return host.split(".")[0] if host else None
 
-# Get collection
-meta_data = client.collections.get("Metadata")
+def main():
+    load_dotenv()
+    azure_api_key = (
+        os.getenv("AZURE_OPENAI_KEY")
+        or os.getenv("OPENAI_API_KEY")
+        or os.getenv("OPENAI_APIKEY")
+    )
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    deployment_id = (
+        os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT")
+        or os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        or os.getenv("OPENAI_EMBEDDING_MODEL")
+        or "text-embedding-3-small"
+    )
+    resource_name = os.getenv("AZURE_OPENAI_RESOURCE_NAME") or resource_name_from_endpoint(azure_endpoint)
 
-with open("confluence_metadata.json", "r", encoding="utf-8") as f:
-    data = json.load(f)
+    if not azure_api_key:
+        raise RuntimeError(
+            "Missing API key. Set OPENAI_API_KEY, OPENAI_APIKEY, or AZURE_OPENAI_KEY in your environment/.env."
+        )
+    if not resource_name:
+        raise RuntimeError(
+            "Missing Azure resource name. Set AZURE_OPENAI_RESOURCE_NAME or AZURE_OPENAI_ENDPOINT in your environment/.env."
+        )
+    headers = {
+        # Required by text2vec-openai at import/query time.
+        "X-Openai-Api-Key": azure_api_key,
+        "X-Azure-Api-Key": azure_api_key,
+    }
 
-for obj in data:
-    obj["page_id"] = (obj.get("page_id"))
-    obj["title"] = (obj.get("title"))
-    obj["snippet"] = (obj.get("snippet"))
-    obj["last_modified"] = (obj.get("last_modified")) 
-    obj["version_number"] = (obj.get("version_number"))
-    obj["lastmodified_author"] = (obj.get("lastmodified_author"))
-    obj["space_key"] = (obj.get("space_key"))
-    obj["space_name"] = (obj.get("space_name"))
-    obj["url"] = (obj.get("url"))
-    obj["timestamp"] = to_rfc3339(obj.get("timestamp"))
+    client = weaviate.connect_to_local(headers=headers)
+
+    try:
+        # Define your collection using v4-compatible dict config.
+        class_dict = {
+            "class": "Metadata",
+            "properties": [
+                {"name": "page_id", "dataType": ["text"]},
+                {"name": "title", "dataType": ["text"]},
+                {"name": "snippet", "dataType": ["text"]},
+                {"name": "version_number", "dataType": ["number"]},
+                {"name": "lastmodified_author", "dataType": ["text"]},
+                {"name": "created_by", "dataType": ["text"]},
+                {"name": "created_timestamp", "dataType": ["date"]}, 
+                {"name": "space_key", "dataType": ["text"]},
+                {"name": "space_name", "dataType": ["text"]},
+                {"name": "ancestor_titles", "dataType": ["text[]"]},
+                {"name": "url", "dataType": ["text"]},
+                {"name": "lastmodified_timestamp", "dataType": ["date"]},
+            ],
+            "vectorizer": "text2vec-openai",
+            "moduleConfig": {
+                "text2vec-openai": {
+                    "isAzure": True,
+                    "vectorizeClassName": False,
+                    "vectorizePropertyName": True,
+                    "model": "text-embedding-3-small",
+                    "deploymentId": deployment_id,
+                    "resourceName": resource_name,
+                }
+            },
+        }
+
+        if client.collections.exists("Metadata"):
+            client.collections.delete("Metadata")
+            print("Deleted existing 'Metadata' collection.")
+
+        client.collections.create_from_dict(class_dict)
+        print("Created 'Metadata' collection.")
+
+        collection = client.collections.get("Metadata")
+
+        with open("confluence_metadata.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        for obj in data:
+            obj["created_timestamp"] = to_rfc3339(obj.get("created_timestamp"))
+            obj["lastmodified_timestamp"] = to_rfc3339(obj.get("lastmodified_timestamp"))
+
+        collection.data.insert_many(data)
+        print(f"Inserted {len(data)} objects")
+
+        # Example semantic search
+        search_query = "vector search"
+        result = collection.query.near_text(
+            query=search_query,
+            limit=3,
+            return_properties=["title", "snippet"],
+        )
+
+        for obj in result.objects:
+            print(obj.properties)
+    finally:
+        client.close()
 
 
-# Insert data into Weaviate
-with meta_data.batch.dynamic() as batch:
-    for obj in data:
-        batch.add_object(properties=obj)
-
-print(f"Inserted {len(data)} objects")
-
-# Example semantic search
-results = meta_data.query.near_text(
-    query="vector search",
-    limit=3
-)
-
-for obj in results.objects:
-    print(obj.properties)
-
-client.close()
+if __name__ == "__main__":
+    main()
