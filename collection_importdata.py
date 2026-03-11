@@ -58,13 +58,15 @@ def main():
                 {"name": "page_id", "dataType": ["text"]},
                 {"name": "title", "dataType": ["text"]},
                 {"name": "snippet", "dataType": ["text"]},
-                {"name": "last_modified", "dataType": ["date"]},
                 {"name": "version_number", "dataType": ["number"]},
                 {"name": "lastmodified_author", "dataType": ["text"]},
+                {"name": "created_by", "dataType": ["text"]},
+                {"name": "created_timestamp", "dataType": ["date"]}, 
                 {"name": "space_key", "dataType": ["text"]},
                 {"name": "space_name", "dataType": ["text"]},
+                {"name": "ancestor_titles", "dataType": ["text[]"]},
                 {"name": "url", "dataType": ["text"]},
-                {"name": "timestamp", "dataType": ["date"]},
+                {"name": "lastmodified_timestamp", "dataType": ["date"]},
             ],
             "vectorizer": "text2vec-openai",
             "moduleConfig": {
@@ -92,7 +94,8 @@ def main():
             data = json.load(f)
 
         for obj in data:
-            obj["timestamp"] = to_rfc3339(obj.get("timestamp"))
+            obj["created_timestamp"] = to_rfc3339(obj.get("created_timestamp"))
+            obj["lastmodified_timestamp"] = to_rfc3339(obj.get("lastmodified_timestamp"))
 
         collection.data.insert_many(data)
         print(f"Inserted {len(data)} objects")
