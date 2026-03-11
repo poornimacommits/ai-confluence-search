@@ -64,7 +64,18 @@ def preview(records: list[dict], n: int = 5):
     """
     print("\n--- SAMPLE OUTPUT (first {0}) ---".format(min(n, len(records))))
     for rec in records[:n]:
-        print(rec)
+        print("page_id:          ", rec.get("page_id"))
+        print("title:            ", rec.get("title"))
+        print("snippet:          ", rec.get("snippet"))
+        print("version_number:   ", rec.get("version_number"))
+        print("author (last):    ", rec.get("author"))
+        print("created_by:       ", rec.get("created_by"))
+        print("created_timestamp:", rec.get("created_timestamp"))
+        print("timestamp (last): ", rec.get("timestamp"))
+        print("space_key:        ", rec.get("space_key"))
+        print("space_name:       ", rec.get("space_name"))
+        print("ancestor_titles:  ", rec.get("ancestor_titles"))
+        print("url:              ", rec.get("url"))
         print()
 
 

@@ -72,9 +72,9 @@ class ConfluenceClient:
         return results[0] if results else None
 
     async def get_page(self, page_id: str):
-        """Fetch full page JSON including storage, version, space."""
+        """Fetch full page JSON including storage, version, space, history, ancestors."""
         transport = get_transport()
-        params = {"expand": "body.storage,version,space"}
+        params = {"expand": "body.storage,version,space,history,ancestors"}
 
         async with httpx.AsyncClient(transport=transport, timeout=30.0) as client:
             r = await client.get(f"{self.base}/rest/api/content/{page_id}",
@@ -115,7 +115,7 @@ class ConfluenceClient:
         return collected
 
     # -----------------------------------------------------
-    # Metadata extraction (no body_text)
+    # Metadata extraction
     # -----------------------------------------------------
 
     def extract_metadata(self, page_json: dict, snippet_len: int = 240) -> dict:
@@ -126,61 +126,93 @@ class ConfluenceClient:
 
         content = page_json or {}
 
-        # Basic
+        # ---------------------
+        # Basic identifiers
+        # ---------------------
         page_id = content.get("id")
         title = content.get("title", "")
 
-        # Space
+        # ---------------------
+        # Space metadata
+        # ---------------------
         space = content.get("space") or {}
         space_key = space.get("key", "")
         space_name = space.get("name", "")
 
-        # Version info
+        # ---------------------
+        # Ancestor titles (only)
+        # ---------------------
+        ancestors_raw = content.get("ancestors", []) or []
+        ancestor_titles = [a.get("title", "") for a in ancestors_raw]
+
+        # ---------------------
+        # Version metadata (last modification)
+        # ---------------------
         version = content.get("version") or {}
-        last_modified = version.get("when")
+        last_modified_raw = version.get("when")
         version_number = version.get("number", 0)
-        author = (version.get("by") or {}).get("displayName", "")
+        last_author = (version.get("by") or {}).get("displayName", "")
 
-        # URL (relative)
-        links = content.get("_links", {}) or {}
-        url = links.get("webui", "")
-
-        # ----- NEW: extract a real snippet -----
-        # get HTML body
-        body = (content.get("body") or {}).get("storage") or {}
-        html = body.get("value", "") or ""
-
-        # clean HTML → plain text
-        clean_text = self._clean_html(html)
-
-        # snippet = first N chars of clean text
-        if clean_text.strip():
-            snippet = clean_text[:snippet_len].rstrip() + ("…" if len(clean_text) > snippet_len else "")
-        else:
-            # fallback: title
-            snippet = title
-
-
-        # Epoch timestamp
+        # numeric last-modified timestamp
         timestamp = None
-        if last_modified:
+        if last_modified_raw:
             try:
-                dt = datetime.fromisoformat(last_modified.replace("Z", "+00:00"))
+                dt = datetime.fromisoformat(last_modified_raw.replace("Z", "+00:00"))
                 timestamp = int(dt.timestamp() * 1000)
             except:
                 timestamp = None
 
+        # ---------------------
+        # Creation metadata
+        # ---------------------
+        history = content.get("history") or {}
+        created_by = (history.get("createdBy") or {}).get("displayName", "")
+        created_raw = history.get("createdDate")
+
+        created_timestamp = None
+        if created_raw:
+            try:
+                dt2 = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+                created_timestamp = int(dt2.timestamp() * 1000)
+            except:
+                created_timestamp = None
+
+        # ---------------------
+        # URL
+        # ---------------------
+        links = content.get("_links", {}) or {}
+        url = links.get("webui", "")
+
+        # ---------------------
+        # Snippet generation
+        # ---------------------
+        body = (content.get("body") or {}).get("storage") or {}
+        html = body.get("value", "") or ""
+        clean_text = self._clean_html(html)
+
+        if clean_text.strip():
+            snippet = clean_text[:snippet_len].rstrip() + (
+                "…" if len(clean_text) > snippet_len else ""
+            )
+        else:
+            snippet = title  # fallback
+
+        # ---------------------
+        # Final metadata dict
+        # ---------------------
         return {
             "page_id": page_id,
             "title": title,
             "snippet": snippet,
-            "last_modified": last_modified,
             "version_number": version_number,
-            "author": author,
+            "author": last_author,
+            "created_by": created_by,
+            "created_timestamp": created_timestamp,
             "space_key": space_key,
             "space_name": space_name,
+            "ancestor_titles": ancestor_titles,
             "url": url,
-            "timestamp": timestamp,
+            "timestamp": timestamp,  # last modified epoch ms
         }
 
     # -----------------------------------------------------
@@ -188,9 +220,7 @@ class ConfluenceClient:
     # -----------------------------------------------------
 
     async def fetch_page_with_metadata(self, page_id: str) -> dict:
-        """
-        Fetch one page & return metadata-only dict.
-        """
+        """Fetch one page & return metadata-only dict."""
         page_json = await self.get_page(page_id)
         if not page_json:
             return None
@@ -215,8 +245,11 @@ class ConfluenceClient:
                 print(f"[warn] Error processing page {pid}: {ex}")
                 continue
 
-
         return pages
+
+    # -----------------------------------------------------
+    # HTML cleaner
+    # -----------------------------------------------------
 
     def _clean_html(self, html: str) -> str:
         """Very small HTML → plain text cleaner for snippet extraction."""
@@ -231,5 +264,5 @@ class ConfluenceClient:
         # Collapse whitespace
         text = re.sub(r"\s+", " ", text).strip()
 
-        # Unescape HTML entities (&amp; → &)
+        # Unescape HTML entities
         return ihtml.unescape(text)
