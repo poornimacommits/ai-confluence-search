@@ -56,8 +56,8 @@ def main():
             "class": "Metadata",
             "properties": [
                 {"name": "page_id", "dataType": ["text"]},
-                {"name": "title", "dataType": ["text"]},
-                {"name": "snippet", "dataType": ["text"]},
+                {"name": "title", "dataType": ["text"], "vectorize": True},
+                {"name": "snippet", "dataType": ["text"], "vectorize": True},
                 {"name": "version_number", "dataType": ["number"]},
                 {"name": "lastmodified_author", "dataType": ["text"]},
                 {"name": "created_by", "dataType": ["text"]},
@@ -73,7 +73,7 @@ def main():
                 "text2vec-openai": {
                     "isAzure": True,
                     "vectorizeClassName": False,
-                    "vectorizePropertyName": True,
+                    "vectorizePropertyName": False,
                     "model": "text-embedding-3-small",
                     "deploymentId": deployment_id,
                     "resourceName": resource_name,
