@@ -10,82 +10,198 @@ from dotenv import load_dotenv
 from openai import AzureOpenAI
 
 
-# -------------------------------------------------------
-# 1) Load environment
-# -------------------------------------------------------
-load_dotenv()
+def fetch(query: str) -> dict:
+    load_dotenv()
 
-AOAI_API_KEY   = os.getenv("AZURE_OPENAI_KEY")
-AOAI_ENDPOINT  = os.getenv("AZURE_OPENAI_ENDPOINT")
-AOAI_VERSION   = os.getenv("AZURE_OPENAI_API_VERSION")
-AOAI_MODEL     = os.getenv("AZURE_OPENAI_QUERY_REWRITE_DEPLOYMENT")  # e.g., "gpt-4o"
+    AOAI_API_KEY = os.getenv("AZURE_OPENAI_KEY")
+    AOAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+    AOAI_VERSION = os.getenv("AZURE_OPENAI_API_VERSION")
+    AOAI_MODEL = os.getenv("AZURE_OPENAI_QUERY_REWRITE_DEPLOYMENT")
+    # -------------------------------------------------------
+    # Azure OpenAI client (GPT‑4o)
+    # -------------------------------------------------------
+    client_llm = AzureOpenAI(
+        azure_endpoint=AOAI_ENDPOINT,
+        api_key=AOAI_API_KEY,
+        api_version=AOAI_VERSION,
+    )
 
-if not AOAI_API_KEY or not AOAI_ENDPOINT or not AOAI_VERSION or not AOAI_MODEL:
-    raise RuntimeError("Missing Azure OpenAI ENV vars: AZURE_OPENAI_KEY / AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_VERSION / AZURE_OPENAI_QUERY_REWRITE_DEPLOYMENT")
-
-
-# -------------------------------------------------------
-# 2) Azure OpenAI client (GPT‑4o)
-# -------------------------------------------------------
-client_llm = AzureOpenAI(
-    azure_endpoint=AOAI_ENDPOINT,
-    api_key=AOAI_API_KEY,
-    api_version=AOAI_VERSION,
-)
+    # -------------------------------------------------------
+    # Weaviate v3 client
+    # -------------------------------------------------------
 
 
-# -------------------------------------------------------
-# 3) Weaviate v3 client
-# -------------------------------------------------------
-client_wv = weaviate.Client(
-    url="http://localhost:8080",
-    additional_headers={
-        # Only needed if your text2vec-openai module requires headers at query time
-        "X-Openai-Api-Key": AOAI_API_KEY,
-        "X-Azure-Api-Key": AOAI_API_KEY,
-    }
-)
+    results = get_random_documents(limit=20)
+    #result = xyz()
+
+    if not results:
+        print("❗ No documents retrieved from Weaviate.")
+        raise SystemExit()
 
 
-# -------------------------------------------------------
-# 4) Random sampling from Weaviate (for testing)
-# -------------------------------------------------------
+    enriched = present_results(
+        results,
+        query
+
+    )
+
+
+    return enriched
+
+
+
 def get_random_documents(limit=20):
     """
     Retrieve ~random documents by using a random vector search.
     Works with weaviate-client 3.26.6.
     """
+    load_dotenv()
+
+    AOAI_API_KEY = os.getenv("AZURE_OPENAI_KEY")
+    AOAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+    AOAI_VERSION = os.getenv("AZURE_OPENAI_API_VERSION")
+    AOAI_MODEL = os.getenv("AZURE_OPENAI_QUERY_REWRITE_DEPLOYMENT")
     random_vec = np.random.rand(1536).tolist()
 
-    response = (
-        client_wv.query
-        .get(
-            "Metadata",
-            [
-                "title",
-                "snippet",
-                "url",
-                "timestamp",
-                "created_timestamp",
-                "author",
-                "created_by",
-                "space_name",
-                "ancestor_titles",
-                "version_number",
-            ]
-        )
-        .with_near_vector({"vector": random_vec})
-        .with_limit(limit)
-        .do()
+    client_wv = weaviate.connect_to_local(
+        headers={
+            # These headers are used by Weaviate's text2vec-openai module if it needs
+            # to call Azure/OpenAI at import/query time.
+            "X-Openai-Api-Key": AOAI_API_KEY,
+            "X-Azure-Api-Key": AOAI_API_KEY,
+        }
     )
 
-    return response.get("data", {}).get("Get", {}).get("Metadata", []) or []
+    # e.g., "gpt-4o"
+
+    if not AOAI_API_KEY or not AOAI_ENDPOINT or not AOAI_VERSION or not AOAI_MODEL:
+        raise RuntimeError(
+            "Missing Azure OpenAI ENV vars: AZURE_OPENAI_KEY / AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_VERSION / AZURE_OPENAI_QUERY_REWRITE_DEPLOYMENT")
+
+    collection = client_wv.collections.get("Metadata")
+
+    response = collection.query.near_vector(
+        near_vector=random_vec,
+        limit=limit,
+        return_properties=[
+            "title",
+            "snippet",
+            "url",
+            "timestamp",
+            "created_timestamp",
+            "author",
+            "created_by",
+            "space_name",
+            "ancestor_titles",
+            "version_number",
+        ]
+    )
+
+    #v4: response.objects is a LIST of objects
+    docs = [obj.properties for obj in response.objects]
+    client_wv.close()
+    return docs or []
 
 
-# -------------------------------------------------------
-# 5) Email derivation helpers (backend-controlled)
-#    "Last, First, SKY"  -> "first.last@sky.de"
-# -------------------------------------------------------
+def present_results(query: str, results: list[dict]) -> dict:
+    """
+    Use GPT‑4o to convert raw hybrid DB results into enriched,
+    UI-ready JSON with all metadata fields, outdated detection,
+    breadcrumb section, cleaned snippets, author info, etc.
+
+    NOTE: The model is instructed NOT to generate email addresses.
+          Backend will attach 'contact_author' for outdated items.
+    """
+    from datetime import datetime
+
+    def serialize_for_prompt(obj):
+        """Convert non-JSON types (e.g., datetime) to strings."""
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return obj
+
+    system_prompt = f"""You are an assistant that summarizes structured Confluence search results related to stale pages which can be deleted and cleaned.
+    You are given:
+    1. The user's question
+    2. A structured JSON object containing the 10 most relevant Confluence pages
+    Your task:
+    - Provide a clear, human-readable summary.
+    - Highlight outdated pages if applicable.
+    - Mention authors when relevant.
+    - Explain why the pages match the query.
+    - Do NOT invent information.
+    
+    - Only use the provided JSON.
+    - If no strong matches exist, state that clearly."""
+
+    user_prompt = f"""
+    User Query:
+    {query}
+
+    Top 10 Confluence Results (JSON):
+    The schema looks like this:
+    
+    {json.dumps(results, indent=2, default=serialize_for_prompt)}
+
+    Please provide:
+    1. A short, plain-language  summary (2–4 sentences) that answers or frames the user’s query based on the provided pages.
+    2. A bullet list of key findings: what each page is about and why it might be relevant and alongside provide a URL link to each page, based on the schema shown above and use the URL parameter which can be found using results[0]['url'] this from results provided and append with https://www.stb.bskyb.com/confluence/ to form the full URL
+    4. A list of stale/outdated pages (those with last modified date older than two years, last modified date can be extracted from results[0]['timestamp']), including authors or creators if available.
+    5. Practical cleanup suggestions (only if applicable), such as “delete”, “archive”, or “review and update”.
+    6. The final answer MUST be written in normal human language — no raw JSON, no code blocks.
+
+    Format the response cleanly using plain text and bullet points.
+    """
+    load_dotenv()
+
+    AOAI_API_KEY = os.getenv("AZURE_OPENAI_KEY")
+    AOAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+    AOAI_VERSION = os.getenv("AZURE_OPENAI_API_VERSION")
+    AOAI_MODEL = os.getenv("AZURE_OPENAI_QUERY_REWRITE_DEPLOYMENT")
+    client_llm = AzureOpenAI(
+        azure_endpoint=AOAI_ENDPOINT,
+        api_key=AOAI_API_KEY,
+        api_version=AOAI_VERSION,
+    )
+
+    completion = client_llm.chat.completions.create(
+        model=AOAI_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        temperature=0.2
+    )
+
+    raw = completion.choices[0].message.content.strip()
+
+    # ---- Robust code-fence stripping (```json ... ```) ----
+    clean = raw
+    if clean.startswith("```"):
+        # Remove the first fence
+        parts = clean.split("```", 1)
+        if len(parts) > 1:
+            clean = parts[1].strip()
+        # Remove optional leading 'json'
+        if clean.lower().startswith("json"):
+            clean = clean[4:].strip()
+    if clean.endswith("```"):
+        clean = clean.rsplit("```", 1)[0].strip()
+
+    # ---- Parse JSON and attach derived emails for outdated items ----
+    try:
+        obj = json.loads(clean)
+        obj = attach_emails(obj)
+        return obj
+    except Exception as e:
+        return {
+            "error": str(e),
+            "raw_response": raw,
+            "clean_attempt": clean
+        }
+
+
+
 ORG_SUFFIXES = {"sky", "skyb", "sky de", "sky_de", "sky germany", "sky deutschland"}
 
 def _strip_accents(s: str) -> str:
@@ -93,6 +209,8 @@ def _strip_accents(s: str) -> str:
         c for c in unicodedata.normalize("NFKD", s)
         if not unicodedata.combining(c)
     )
+
+
 
 def derive_email(author: str, domain: str = "sky.de") -> str | None:
     """
@@ -174,92 +292,6 @@ def attach_emails(enriched: dict) -> dict:
 # -------------------------------------------------------
 # 6) GPT‑4o result-enhancement (final formatting)
 # -------------------------------------------------------
-def present_results(query: str, results: list[dict]) -> dict:
-    """
-    Use GPT‑4o to convert raw hybrid DB results into enriched,
-    UI-ready JSON with all metadata fields, outdated detection,
-    breadcrumb section, cleaned snippets, author info, etc.
-
-    NOTE: The model is instructed NOT to generate email addresses.
-          Backend will attach 'contact_author' for outdated items.
-    """
-
-    prompt = f"""
-You are the AI Search Result Presenter for internal Confluence search.
-
-Your task:
-- ONLY use metadata provided below.
-- DO NOT hallucinate or invent content.
-- Clean and rewrite snippet text (remove URLs/HTML).
-- Convert ancestor_titles into a human-readable breadcrumb "section".
-- Convert timestamp & created_timestamp into human-readable dates.
-- Compute `age_days` = days since last modification (timestamp). If the timestamp is in the future, set age_days = 0.
-- Set `is_outdated = true` if age_days > 730.
-- Include these fields: author, created_by, timestamp, created_timestamp.
-- Do NOT generate email addresses. If the document is outdated, set "email_candidate_hint": true (backend will attach contact_author).
-- Return VALID JSON ONLY.
-
-JSON FORMAT TO PRODUCE:
-{{
-  "summary": "High-level overview of what these documents describe.",
-  "results": [
-    {{
-      "title": "...",
-      "url": "...",
-      "section": "... > ...",
-      "updated": "human-readable date",
-      "created": "human-readable date",
-      "author": "...",
-      "created_by": "...",
-      "age_days": 0,
-      "is_outdated": false,
-      "email_candidate_hint": false,
-      "snippet": "rewritten clean snippet",
-      "relevance_reason": "why this matches the query"
-    }}
-  ]
-}}
-
-User Query:
-{query}
-
-Documents:
-{json.dumps(results, indent=2)}
-"""
-
-    completion = client_llm.chat.completions.create(
-        model=AOAI_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2
-    )
-
-    raw = completion.choices[0].message.content.strip()
-
-    # ---- Robust code-fence stripping (```json ... ```) ----
-    clean = raw
-    if clean.startswith("```"):
-        # Remove the first fence
-        parts = clean.split("```", 1)
-        if len(parts) > 1:
-            clean = parts[1].strip()
-        # Remove optional leading 'json'
-        if clean.lower().startswith("json"):
-            clean = clean[4:].strip()
-    if clean.endswith("```"):
-        clean = clean.rsplit("```", 1)[0].strip()
-
-    # ---- Parse JSON and attach derived emails for outdated items ----
-    try:
-        obj = json.loads(clean)
-        obj = attach_emails(obj)
-        return obj
-    except Exception as e:
-        return {
-            "error": str(e),
-            "raw_response": raw,
-            "clean_attempt": clean
-        }
-
 
 # -------------------------------------------------------
 # 7) Run this file directly to test
@@ -272,10 +304,9 @@ if __name__ == "__main__":
         print("❗ No documents retrieved from Weaviate.")
         raise SystemExit()
 
-    print("🤖 Calling GPT‑4o for enhanced result presentation...\n")
 
-    enriched = present_results(
-        query="Dummy test query for result formatting",
+    enriched = fetch(
+        query="Page title related to Suggested Columns in Octane by Fabian",
         results=docs
     )
 
