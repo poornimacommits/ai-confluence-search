@@ -4,7 +4,11 @@ import os
 import requests
 from pathlib import Path
 from dotenv import load_dotenv
+from openai import AzureOpenAI
 
+# Always load the workspace-level .env regardless of launch directory.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
 
 st.set_page_config(
     page_title="AI Confluence Search",
@@ -37,23 +41,38 @@ def set_background(png_file):
         unsafe_allow_html=True
     )
 
-
-def resolve_background_path(file_name):
-    app_dir = Path(__file__).resolve().parent
-    local_path = app_dir / file_name
-    if local_path.exists():
-        return local_path
-    cwd_path = Path.cwd() / file_name
-    if cwd_path.exists():
-        return cwd_path
-    raise FileNotFoundError(f"Background image not found: {local_path} or {cwd_path}")
-
-
 # Set the background
-set_background(resolve_background_path("background.png"))
+set_background("background.png")
 st.title("🔎 AI-Powered Confluence Search")
 
 st.markdown("Find the **most reliable internal documentation instantly**.")
+
+# Initialize GPT-4 client for query rewriting
+client_gpt = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_KEY"),
+    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+)
+
+def rewrite_query(user_query):
+    prompt = f"""
+Rewrite the user query so it is clear and optimized for semantic search 
+in a knowledge base containing technical documentation and Confluence pages.
+
+User query:
+{user_query}
+
+Rewritten query:
+"""
+    response = client_gpt.chat.completions.create(
+        model=os.getenv("AZURE_OPENAI_QUERY_REWRITE_DEPLOYMENT"),
+        temperature=0,
+        messages=[
+            {"role": "system", "content": "You improve search queries."},
+            {"role": "user", "content": prompt}
+        ]
+    )
+    return response.choices[0].message.content.strip()
 
 # Connect to Weaviate
 @st.cache_resource
@@ -61,10 +80,6 @@ def get_client():
     return weaviate.connect_to_local()
 
 client = get_client()
-
-# Always load the workspace-level .env regardless of launch directory.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(PROJECT_ROOT / ".env")
 
 # Core AI step: Get embedding for the search query using Azure OpenAI
 def get_query_embedding(text):
@@ -99,9 +114,11 @@ query = st.text_input("Search internal knowledge")
 
 if st.button("Search") and query:
 
-    with st.spinner("Searching..."):
+    with st.spinner("Optimizing query..."):
+        rewritten_query = rewrite_query(query)
+        st.write(f"**Rewritten Query:** {rewritten_query}")
         query_vector = get_query_embedding(
-            "Convert this query into an embedding for semantic search of Confluence knowledge:" + query
+            "Convert this query into an embedding for semantic search of Confluence knowledge:" + rewritten_query
         )
 
         # Show the vector
@@ -109,11 +126,12 @@ if st.button("Search") and query:
 
         # Perform semantic search in the 'Metadata' class
         try:
+
             collection = client.collections.get("Metadata")
             response = collection.query.near_vector(
                 near_vector=query_vector,
                 limit=10,
-                return_properties=["last_modified", "space_name", "title", "url"]
+                return_properties=["lastmodified_timestamp", "space_name", "title", "url"]
             )
         
             # Extract results
@@ -124,7 +142,7 @@ if st.button("Search") and query:
             else:
                 for idx, obj in enumerate(metadata, start=1):
                     props = obj.properties
-                    last_modified = props.get("last_modified", "Unknown Date")
+                    lastmodified_timestamp = props.get("lastmodified_timestamp", "Unknown Date")
                     title = props.get("title", "No Title")
                     if props.get('url'):
                         base_url = "https://www.stb.bskyb.com/confluence"
@@ -132,7 +150,7 @@ if st.button("Search") and query:
                         st.markdown(f"### {title} 🔗 ({url})")
                     else:
                         st.markdown(f"### {title}")
-                    st.markdown(f"**Last Modified:** {last_modified}")
+                    st.markdown(f"**Last Modified:** {lastmodified_timestamp}")
                     st.markdown("---")
 
         except Exception as e:
