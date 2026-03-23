@@ -148,7 +148,7 @@ def present_results(query: str, results: list[dict]) -> dict:
 
     Please provide:
     1. A short, plain-language  summary (2–4 sentences) that answers or frames the user’s query based on the provided pages.
-    2. A bullet list of key findings: what each page is about and why it might be relevant and alongside provide a URL link to each page, based on the schema shown above and use the URL parameter which can be found using results[0]['url'] this from results provided and append with https://www.stb.bskyb.com/confluence/ to form the full URL
+    2. Always show a bullet list of key findings: what each page is about and why it might be relevant and alongside provide a URL link to each page, based on the schema shown above and use the URL parameter which can be found using results[0]['url'] this from results provided and append with https://www.stb.bskyb.com/confluence/ to form the full URL
     3. You are a helpful assistant and you are in today's date: {today}.
     4. A list of stale/outdated pages (those with last modified date older than two years from today, last modified date can be extracted from results[0]['lastmodified_timestamp']), including authors or creators if available.
     5. Practical cleanup suggestions (only if applicable), such as “delete”, “archive”, or “review and update”.

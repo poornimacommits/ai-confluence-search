@@ -64,7 +64,7 @@ def set_background(png_file):
 
 # Set the background
 set_background(r"C:\Users\TSAN01\PycharmProjects\labweek_2026\frontend\background.png")
-st.title("🔎 AI-Powered Confluence Search")
+st.title("🔎 AI-Powered Confluence Clean-Up Recommendations")
 
 st.markdown("Find the **most reliable internal documentation instantly**.")
 
@@ -135,7 +135,7 @@ query = st.text_input("Search internal knowledge")
 
 if st.button("Search") and query:
 
-    with st.spinner("Optimizing query..."):
+    with st.spinner("Analyzing your query..."):
         llm_extract = extract_filters(query)
         #st.write(llm_extract)
         where_filter, semantic_query = build_my_where_clause(llm_extract, allowed_fields=ALLOWED_FILTER_FIELDS)

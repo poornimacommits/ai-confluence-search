@@ -107,7 +107,7 @@ def extract_filters(query: str):
            "start": "<YYYY-MM-DD or None>",
            "end": "<YYYY-MM-DD or None>"
        }},
-       "page_id": "<value or Nonel>",
+       "page_id": "<value or None>",
        "version_number": "<value or None>",
        "space_key": "<value or None>",
        "ancestor_titles": "<value or None>",
