@@ -121,42 +121,53 @@ def present_results(query: str, results: list[dict]) -> dict:
             return obj.isoformat()
         return obj
 
-    system_prompt = f"""You are an assistant that summarizes structured Confluence search results related to stale pages which can be deleted and cleaned.
-    You are given:
-    1. The user's question
-    2. A structured JSON object containing the 10 most relevant Confluence pages
-    Your task:
-    - Provide a clear, human-readable summary.
-    - Highlight outdated pages if applicable.
-    - Mention authors when relevant.
-    - Explain why the pages match the query.
-    - Do NOT invent information.
+    system_prompt = """You summarize structured Confluence search results, focusing on identifying stale pages that may need cleanup.
     
-    - Only use the provided JSON.
-    - If no strong matches exist, state that clearly."""
+    You are given:
+    1. The user's query.
+    2. A JSON list of up to 10 Confluence pages.
+    
+    Your task:
+    - Give a short, clear summary in natural language.
+    - Explain why pages match the user’s query.
+    - List each page with title, relevance, and full URL.
+    - Identify stale pages (last modified > 2 years ago) using the timestamps.
+    - Mention authors/creators when available.
+    - Suggest cleanup actions only when applicable (“review/update”, “archive”, “delete”).
+    - When the user asks for pages by an author, match ANY page where that person appears in ANY author/creator field. Do NOT require sole authorship.
+    - Use ONLY the provided JSON. Do NOT invent details.
+    - If nothing is relevant, say: "No relevant pages found."
+    """
 
     today = datetime.utcnow().date()
 
     user_prompt = f"""
     User Query:
     {query}
-
-    Top 10 Confluence Results (JSON):
-    The schema looks like this:
     
-    {json.dumps(results, indent=2, default=serialize_for_prompt)}
-
+    Confluence Results (JSON):
+    {json.dumps(results, separators=(",", ":"), default=serialize_for_prompt)}
+    
     Please provide:
-    1. A short, plain-language  summary (2–4 sentences) that answers or frames the user’s query based on the provided pages.
-    2. Always show a bullet list of key findings: what each page is about and why it might be relevant and alongside provide a URL link to each page, based on the schema shown above and use the URL parameter which can be found using results[0]['url'] this from results provided and append with https://www.stb.bskyb.com/confluence/ to form the full URL
-    3. You are a helpful assistant and you are in today's date: {today}.
-    4. A list of stale/outdated pages (those with last modified date older than two years from today, last modified date can be extracted from results[0]['lastmodified_timestamp']), including authors or creators if available.
-    5. Practical cleanup suggestions (only if applicable), such as “delete”, “archive”, or “review and update”.
-    6. If you don't find any results, display a message "No relevant pages found."
-    7. The final answer MUST be written in normal human language — no raw JSON, no code blocks.
-
-    Format the response cleanly using plain text and bullet points.
+    1. A 2–4 sentence summary answering the query based on these pages.
+    2. A bullet list of each page: title, what it's about, why it matches, and its full URL (prepend: https://www.stb.bskyb.com/confluence/).
+    3. A list of stale pages last modified more than 2 years before today ({today}), including created_by authors if available.
+    4. Always display cleanup suggestions when relevant pages are available in a separate section with the following format (example):
+    Cleanup Suggestions
+	• Review/update:
+	• APIX
+	• E2E Test - Homepage - SkyDE
+	• Archive or delete:
+	• Requirements / Documentation / Workpackages
+	• Testcase Creation - Naming convention
+	• Gz - Gonzales Database
+	These actions will help ensure the Confluence space remains relevant and organized.
+    5. If no relevant pages exist, say: "No relevant pages found."
+    
+    Write everything in normal language with plain text and bullet points.
+    Do NOT output JSON or code blocks.
     """
+
     load_dotenv()
 
     AOAI_API_KEY = os.getenv("AZURE_OPENAI_KEY")

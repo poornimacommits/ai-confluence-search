@@ -79,6 +79,7 @@ def extract_filters(query: str):
     - Do NOT assign values to the wrong field.
     - for space name, if the value has 2 words, assign to space_name, if it has 1 word, assign to space_key.
     - If a value could belong to multiple fields, choose the most appropriate.
+    - If the query has "pages with author as", treat them as created_by field
     - Do not split multi-word values.
     - Return nothing if the query does not specify a field.
     - Generate the timings according to the query e.g. "last week" or "in the last 30 days" should always be converted 
